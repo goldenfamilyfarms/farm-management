@@ -1,0 +1,33 @@
+{
+  "name": "@farm/infra",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AWS CDK infrastructure for Farm Management Platform",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "deploy:free": "cdk deploy --context env=free --require-approval never",
+    "deploy:dev": "cdk deploy --context env=dev",
+    "deploy:staging": "cdk deploy --context env=staging",
+    "deploy:prod": "cdk deploy --context env=prod",
+    "diff": "cdk diff",
+    "diff:free": "cdk diff --context env=free",
+    "destroy": "cdk destroy",
+    "destroy:free": "cdk destroy --context env=free --force",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.120.0",
+    "constructs": "^10.3.0",
+    "source-map-support": "^0.5.21"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "aws-cdk": "^2.120.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}

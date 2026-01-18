@@ -1,0 +1,620 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis, timescaledb]
+}
+
+// ============================================
+// Core Module - Authentication & Multi-tenancy
+// ============================================
+
+model Farm {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  location  Unsupported("geography(Point, 4326)")?
+  timezone  String   @default("UTC") @db.VarChar(50)
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  users       User[]
+  fields      Field[]
+  equipment   Equipment[]
+  workers     Worker[]
+  timeCards   TimeCard[]
+  tasks       Task[]
+  schedules   Schedule[]
+  expenses    Expense[]
+  revenues    Revenue[]
+  plantings   Planting[]
+  harvests    Harvest[]
+  weatherData WeatherData[]
+
+  @@map("farms")
+}
+
+enum UserRole {
+  owner
+  manager
+  worker
+  viewer
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  farmId       String   @map("farm_id") @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         UserRole
+  profile      Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  farm             Farm              @relation(fields: [farmId], references: [id])
+  worker           Worker?
+  createdExpenses  Expense[]         @relation("ExpenseCreator")
+  approvedTimeCards TimeCard[]       @relation("TimeCardApprover")
+  completedTasks   Task[]            @relation("TaskCompleter")
+  createdTasks     Task[]            @relation("TaskCreator")
+
+  @@index([farmId])
+  @@map("users")
+}
+
+// ============================================
+// Geospatial Module - Fields & Zones
+// ============================================
+
+model Field {
+  id             String   @id @default(uuid()) @db.Uuid
+  farmId         String   @map("farm_id") @db.Uuid
+  name           String   @db.VarChar(255)
+  boundary       Unsupported("geography(Polygon, 4326)")
+  acreage        Decimal? @db.Decimal(10, 2)
+  soilType       String?  @map("soil_type") @db.VarChar(100)
+  irrigationType String?  @map("irrigation_type") @db.VarChar(100)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  farm                 Farm                  @relation(fields: [farmId], references: [id])
+  zones                Zone[]
+  plantings            Planting[]
+  harvests             Harvest[]
+  expenses             Expense[]
+  revenues             Revenue[]
+  tasks                Task[]
+  resourceApplications ResourceApplication[]
+
+  @@index([farmId])
+  @@map("fields")
+}
+
+model Zone {
+  id          String   @id @default(uuid()) @db.Uuid
+  fieldId     String   @map("field_id") @db.Uuid
+  name        String   @db.VarChar(255)
+  boundary    Unsupported("geography(Polygon, 4326)")
+  acreage     Decimal? @db.Decimal(10, 2)
+  soilQuality Json     @default("{}") @map("soil_quality")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  field                Field                 @relation(fields: [fieldId], references: [id])
+  plantings            Planting[]
+  harvests             Harvest[]
+  tasks                Task[]
+  recommendations      Recommendation[]
+  resourceApplications ResourceApplication[]
+
+  @@index([fieldId])
+  @@map("zones")
+}
+
+// ============================================
+// Telemetry Module - Equipment & Readings
+// ============================================
+
+enum EquipmentType {
+  tractor
+  harvester
+  sprayer
+  irrigation
+  planter
+  other
+}
+
+enum EquipmentStatus {
+  active
+  maintenance
+  inactive
+}
+
+model Equipment {
+  id              String          @id @default(uuid()) @db.Uuid
+  farmId          String          @map("farm_id") @db.Uuid
+  name            String          @db.VarChar(255)
+  type            EquipmentType
+  make            String?         @db.VarChar(100)
+  model           String?         @db.VarChar(100)
+  serialNumber    String?         @map("serial_number") @db.VarChar(100)
+  deviceId        String?         @unique @map("device_id") @db.VarChar(100)
+  status          EquipmentStatus @default(active)
+  lastTelemetryAt DateTime?       @map("last_telemetry_at") @db.Timestamptz
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  farm               Farm                @relation(fields: [farmId], references: [id])
+  telemetryReadings  TelemetryReading[]
+  maintenanceRecords MaintenanceRecord[]
+  maintenanceAlerts  MaintenanceAlert[]
+
+  @@index([farmId])
+  @@index([deviceId])
+  @@map("equipment")
+}
+
+// Note: This table uses TimescaleDB hypertable - see migration for setup
+model TelemetryReading {
+  time              DateTime  @map("time") @db.Timestamptz
+  equipmentId       String    @map("equipment_id") @db.Uuid
+  location          Unsupported("geography(Point, 4326)")?
+  operatingHours    Decimal?  @map("operating_hours") @db.Decimal(10, 2)
+  fuelLevel         Decimal?  @map("fuel_level") @db.Decimal(5, 2)
+  speed             Decimal?  @db.Decimal(6, 2)
+  engineRpm         Int?      @map("engine_rpm")
+  faultCodes        String[]  @map("fault_codes")
+  resourceDispensed Json?     @map("resource_dispensed")
+  rawData           Json?     @map("raw_data")
+
+  // Relations
+  equipment Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@id([time, equipmentId])
+  @@index([equipmentId, time(sort: Desc)])
+  @@map("telemetry_readings")
+}
+
+// ============================================
+// Maintenance Module
+// ============================================
+
+enum MaintenanceType {
+  scheduled
+  repair
+  inspection
+  emergency
+}
+
+model MaintenanceRecord {
+  id               String          @id @default(uuid()) @db.Uuid
+  equipmentId      String          @map("equipment_id") @db.Uuid
+  type             MaintenanceType
+  description      String?         @db.Text
+  cost             Decimal?        @db.Decimal(10, 2)
+  performedAt      DateTime        @map("performed_at") @db.Timestamptz
+  performedBy      String?         @map("performed_by") @db.VarChar(255)
+  notes            String?         @db.Text
+  nextServiceHours Decimal?        @map("next_service_hours") @db.Decimal(10, 2)
+  nextServiceDate  DateTime?       @map("next_service_date") @db.Date
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  equipment Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@map("maintenance_records")
+}
+
+enum AlertSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+enum AlertType {
+  fault_code
+  service_due
+  inspection_due
+}
+
+model MaintenanceAlert {
+  id             String        @id @default(uuid()) @db.Uuid
+  equipmentId    String        @map("equipment_id") @db.Uuid
+  type           AlertType
+  severity       AlertSeverity
+  message        String        @db.Text
+  faultCodes     String[]      @map("fault_codes")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  acknowledgedAt DateTime?     @map("acknowledged_at") @db.Timestamptz
+  acknowledgedBy String?       @map("acknowledged_by") @db.Uuid
+  resolvedAt     DateTime?     @map("resolved_at") @db.Timestamptz
+
+  // Relations
+  equipment Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@map("maintenance_alerts")
+}
+
+// ============================================
+// Resource Tracking Module
+// ============================================
+
+enum ResourceType {
+  seed
+  fertilizer
+  lime
+  pesticide
+  herbicide
+  fuel
+}
+
+model ResourceApplication {
+  id           String       @id @default(uuid()) @db.Uuid
+  farmId       String       @map("farm_id") @db.Uuid
+  fieldId      String       @map("field_id") @db.Uuid
+  zoneId       String?      @map("zone_id") @db.Uuid
+  resourceType ResourceType @map("resource_type")
+  quantity     Decimal      @db.Decimal(12, 2)
+  unit         String       @db.VarChar(20)
+  date         DateTime     @db.Date
+  notes        String?      @db.Text
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  field    Field             @relation(fields: [fieldId], references: [id])
+  zone     Zone?             @relation(fields: [zoneId], references: [id])
+  warnings ResourceWarning[]
+
+  @@index([fieldId, date])
+  @@map("resource_applications")
+}
+
+model ResourceThreshold {
+  id           String       @id @default(uuid()) @db.Uuid
+  farmId       String       @map("farm_id") @db.Uuid
+  resourceType ResourceType @map("resource_type")
+  maxQuantity  Decimal      @map("max_quantity") @db.Decimal(12, 2)
+  unit         String       @db.VarChar(20)
+  isActive     Boolean      @default(true) @map("is_active")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([farmId, resourceType, unit])
+  @@index([farmId, resourceType])
+  @@map("resource_thresholds")
+}
+
+enum ResourceWarningSeverity {
+  low
+  medium
+  high
+}
+
+model ResourceWarning {
+  id                    String                  @id @default(uuid()) @db.Uuid
+  farmId                String                  @map("farm_id") @db.Uuid
+  resourceApplicationId String                  @map("resource_application_id") @db.Uuid
+  resourceType          ResourceType            @map("resource_type")
+  appliedQuantity       Decimal                 @map("applied_quantity") @db.Decimal(12, 2)
+  thresholdQuantity     Decimal                 @map("threshold_quantity") @db.Decimal(12, 2)
+  unit                  String                  @db.VarChar(20)
+  severity              ResourceWarningSeverity
+  message               String                  @db.Text
+  acknowledgedAt        DateTime?               @map("acknowledged_at") @db.Timestamptz
+  acknowledgedBy        String?                 @map("acknowledged_by") @db.Uuid
+  createdAt             DateTime                @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  resourceApplication ResourceApplication @relation(fields: [resourceApplicationId], references: [id])
+
+  @@index([farmId, createdAt])
+  @@map("resource_warnings")
+}
+
+// ============================================
+// Crop Management Module
+// ============================================
+
+enum PlantingStatus {
+  planned
+  planted
+  growing
+  harvested
+  failed
+}
+
+model Planting {
+  id                  String         @id @default(uuid()) @db.Uuid
+  farmId              String         @map("farm_id") @db.Uuid
+  fieldId             String         @map("field_id") @db.Uuid
+  zoneId              String?        @map("zone_id") @db.Uuid
+  cropType            String         @map("crop_type") @db.VarChar(100)
+  variety             String?        @db.VarChar(100)
+  plantingDate        DateTime       @map("planting_date") @db.Date
+  expectedHarvestDate DateTime?      @map("expected_harvest_date") @db.Date
+  seedRate            Decimal?       @map("seed_rate") @db.Decimal(10, 2)
+  seedUnit            String?        @map("seed_unit") @db.VarChar(20)
+  acreage             Decimal?       @db.Decimal(10, 2)
+  status              PlantingStatus @default(planned)
+  createdAt           DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  farm     Farm      @relation(fields: [farmId], references: [id])
+  field    Field     @relation(fields: [fieldId], references: [id])
+  zone     Zone?     @relation(fields: [zoneId], references: [id])
+  harvests Harvest[]
+
+  @@map("plantings")
+}
+
+model Harvest {
+  id           String   @id @default(uuid()) @db.Uuid
+  farmId       String   @map("farm_id") @db.Uuid
+  fieldId      String   @map("field_id") @db.Uuid
+  zoneId       String?  @map("zone_id") @db.Uuid
+  plantingId   String?  @map("planting_id") @db.Uuid
+  cropType     String   @map("crop_type") @db.VarChar(100)
+  quantity     Decimal  @db.Decimal(12, 2)
+  unit         String   @db.VarChar(20)
+  qualityGrade String?  @map("quality_grade") @db.VarChar(20)
+  harvestDate  DateTime @map("harvest_date") @db.Date
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  farm     Farm      @relation(fields: [farmId], references: [id])
+  field    Field     @relation(fields: [fieldId], references: [id])
+  zone     Zone?     @relation(fields: [zoneId], references: [id])
+  planting Planting? @relation(fields: [plantingId], references: [id])
+  revenues Revenue[]
+
+  @@map("harvests")
+}
+
+// ============================================
+// Financial Module
+// ============================================
+
+enum ExpenseCategory {
+  seed
+  fertilizer
+  chemicals
+  fuel
+  labor
+  equipment_maintenance
+  equipment_depreciation
+  land_rent
+  utilities
+  insurance
+  other
+}
+
+model Expense {
+  id          String          @id @default(uuid()) @db.Uuid
+  farmId      String          @map("farm_id") @db.Uuid
+  category    ExpenseCategory
+  amount      Decimal         @db.Decimal(12, 2)
+  currency    String          @default("USD") @db.VarChar(3)
+  date        DateTime        @db.Date
+  description String?         @db.Text
+  fieldId     String?         @map("field_id") @db.Uuid
+  cropType    String?         @map("crop_type") @db.VarChar(100)
+  vendor      String?         @db.VarChar(255)
+  receiptUrl  String?         @map("receipt_url") @db.Text
+  createdBy   String          @map("created_by") @db.Uuid
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  farm    Farm   @relation(fields: [farmId], references: [id])
+  field   Field? @relation(fields: [fieldId], references: [id])
+  creator User   @relation("ExpenseCreator", fields: [createdBy], references: [id])
+
+  @@index([farmId, date])
+  @@map("expenses")
+}
+
+model Revenue {
+  id           String   @id @default(uuid()) @db.Uuid
+  farmId       String   @map("farm_id") @db.Uuid
+  harvestId    String?  @map("harvest_id") @db.Uuid
+  fieldId      String   @map("field_id") @db.Uuid
+  cropType     String   @map("crop_type") @db.VarChar(100)
+  quantity     Decimal  @db.Decimal(12, 2)
+  unit         String   @db.VarChar(20)
+  pricePerUnit Decimal  @map("price_per_unit") @db.Decimal(10, 2)
+  totalAmount  Decimal  @map("total_amount") @db.Decimal(12, 2)
+  currency     String   @default("USD") @db.VarChar(3)
+  saleDate     DateTime @map("sale_date") @db.Date
+  buyer        String?  @db.VarChar(255)
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  farm    Farm     @relation(fields: [farmId], references: [id])
+  harvest Harvest? @relation(fields: [harvestId], references: [id])
+  field   Field    @relation(fields: [fieldId], references: [id])
+
+  @@index([farmId, saleDate])
+  @@map("revenues")
+}
+
+// ============================================
+// Workforce Module
+// ============================================
+
+enum EmploymentType {
+  full_time
+  part_time
+  seasonal
+  contractor
+}
+
+model Worker {
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @unique @map("user_id") @db.Uuid
+  farmId         String         @map("farm_id") @db.Uuid
+  skills         String[]
+  certifications Json           @default("[]")
+  hourlyRate     Decimal?       @map("hourly_rate") @db.Decimal(8, 2)
+  employmentType EmploymentType @map("employment_type")
+  startDate      DateTime       @map("start_date") @db.Date
+  endDate        DateTime?      @map("end_date") @db.Date
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  user      User       @relation(fields: [userId], references: [id])
+  farm      Farm       @relation(fields: [farmId], references: [id])
+  timeCards TimeCard[]
+  schedules Schedule[]
+
+  @@map("workers")
+}
+
+enum TimeCardStatus {
+  active
+  pending_approval
+  approved
+  rejected
+}
+
+model TimeCard {
+  id               String         @id @default(uuid()) @db.Uuid
+  farmId           String         @map("farm_id") @db.Uuid
+  workerId         String         @map("worker_id") @db.Uuid
+  clockIn          DateTime       @map("clock_in") @db.Timestamptz
+  clockOut         DateTime?      @map("clock_out") @db.Timestamptz
+  clockInLocation  Unsupported("geography(Point, 4326)")? @map("clock_in_location")
+  clockOutLocation Unsupported("geography(Point, 4326)")? @map("clock_out_location")
+  totalHours       Decimal?       @map("total_hours") @db.Decimal(5, 2)
+  status           TimeCardStatus @default(active)
+  approvedBy       String?        @map("approved_by") @db.Uuid
+  approvedAt       DateTime?      @map("approved_at") @db.Timestamptz
+  notes            String?        @db.Text
+  flaggedForReview Boolean        @default(false) @map("flagged_for_review")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  farm     Farm    @relation(fields: [farmId], references: [id])
+  worker   Worker  @relation(fields: [workerId], references: [id])
+  approver User?   @relation("TimeCardApprover", fields: [approvedBy], references: [id])
+
+  @@index([workerId, clockIn])
+  @@map("time_cards")
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum TaskStatus {
+  pending
+  in_progress
+  completed
+  cancelled
+}
+
+model Task {
+  id              String       @id @default(uuid()) @db.Uuid
+  farmId          String       @map("farm_id") @db.Uuid
+  title           String       @db.VarChar(255)
+  description     String?      @db.Text
+  fieldId         String?      @map("field_id") @db.Uuid
+  zoneId          String?      @map("zone_id") @db.Uuid
+  assignedTo      String[]     @map("assigned_to") @db.Uuid
+  priority        TaskPriority @default(medium)
+  status          TaskStatus   @default(pending)
+  dueDate         DateTime?    @map("due_date") @db.Timestamptz
+  completedAt     DateTime?    @map("completed_at") @db.Timestamptz
+  completedBy     String?      @map("completed_by") @db.Uuid
+  completionNotes String?      @map("completion_notes") @db.Text
+  attachments     String[]
+  estimatedHours  Decimal?     @map("estimated_hours") @db.Decimal(5, 2)
+  actualHours     Decimal?     @map("actual_hours") @db.Decimal(5, 2)
+  createdBy       String       @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  farm      Farm   @relation(fields: [farmId], references: [id])
+  field     Field? @relation(fields: [fieldId], references: [id])
+  zone      Zone?  @relation(fields: [zoneId], references: [id])
+  completer User?  @relation("TaskCompleter", fields: [completedBy], references: [id])
+  creator   User   @relation("TaskCreator", fields: [createdBy], references: [id])
+
+  @@index([farmId, status])
+  @@map("tasks")
+}
+
+model Schedule {
+  id        String   @id @default(uuid()) @db.Uuid
+  farmId    String   @map("farm_id") @db.Uuid
+  workerId  String   @map("worker_id") @db.Uuid
+  date      DateTime @db.Date
+  startTime String   @map("start_time") @db.VarChar(5)
+  endTime   String   @map("end_time") @db.VarChar(5)
+  role      String?  @db.VarChar(100)
+  notes     String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  farm   Farm   @relation(fields: [farmId], references: [id])
+  worker Worker @relation(fields: [workerId], references: [id])
+
+  @@map("schedules")
+}
+
+// ============================================
+// Weather & Recommendations Module
+// ============================================
+
+// Note: This table uses TimescaleDB hypertable - see migration for setup
+model WeatherData {
+  time          DateTime @map("time") @db.Timestamptz
+  farmId        String   @map("farm_id") @db.Uuid
+  temperature   Decimal? @db.Decimal(5, 2)
+  precipitation Decimal? @db.Decimal(6, 2)
+  humidity      Decimal? @db.Decimal(5, 2)
+  windSpeed     Decimal? @map("wind_speed") @db.Decimal(5, 2)
+  conditions    String?  @db.VarChar(100)
+  source        String?  @db.VarChar(50)
+
+  // Relations
+  farm Farm @relation(fields: [farmId], references: [id])
+
+  @@id([time, farmId])
+  @@map("weather_data")
+}
+
+model Recommendation {
+  id              String   @id @default(uuid()) @db.Uuid
+  zoneId          String   @map("zone_id") @db.Uuid
+  generatedAt     DateTime @default(now()) @map("generated_at") @db.Timestamptz
+  validUntil      DateTime? @map("valid_until") @db.Timestamptz
+  recommendations Json
+  inputData       Json     @map("input_data")
+  explanation     String?  @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Relations
+  zone Zone @relation(fields: [zoneId], references: [id])
+
+  @@map("recommendations")
+}
